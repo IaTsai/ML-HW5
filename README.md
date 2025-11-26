@@ -160,15 +160,15 @@ The optimization achieved a **9.37% reduction** in negative log-likelihood, demo
 
 **Experimental Results:**
 
-| Task | Kernel | Parameters | Accuracy |
-|------|--------|------------|----------|
-| **Task 1** | Linear | C=1 (default) | 95.08% |
-| | Polynomial | C=1 (default) | 34.68% |
-| | RBF | C=1 (default) | 95.32% |
-| **Task 2** | Linear | C=0.1 | 96.74% (CV) |
-| | Polynomial | C=0.1, γ=0.1, d=2 | 98.16% (CV) |
-| | **RBF** | **C=10, γ=0.01** | **98.20% (Test)** ✅ |
-| **Task 3** | Custom (Linear+RBF) | C=0.1, γ=0.001 | 95.80% (Test) |
+| Task       | Kernel              | Parameters        | Accuracy             |
+| ---------- | ------------------- | ----------------- | -------------------- |
+| **Task 1** | Linear              | C=1 (default)     | 95.08%               |
+|            | Polynomial          | C=1 (default)     | 34.68%               |
+|            | RBF                 | C=1 (default)     | 95.32%               |
+| **Task 2** | Linear              | C=0.1             | 96.74% (CV)          |
+|            | Polynomial          | C=0.1, γ=0.1, d=2 | 98.16% (CV)          |
+|            | **RBF**             | **C=10, γ=0.01**  | **98.20% (Test)** ✅ |
+| **Task 3** | Custom (Linear+RBF) | C=0.1, γ=0.001    | 95.80% (Test)        |
 
 **Best Model:** RBF kernel with C=10, γ=0.01 achieves **98.20% test accuracy**
 
@@ -213,4 +213,3 @@ The optimization achieved a **9.37% reduction** in negative log-likelihood, demo
 
 - Course Material: Kernel_GP_SVM.pdf
 - LIBSVM: https://www.csie.ntu.edu.tw/~cjlin/libsvm/
-- Previous implementation analysis (2024 Fall)
