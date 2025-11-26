@@ -1,95 +1,166 @@
 """
 Gaussian Process Regression with Rational Quadratic Kernel
-Author: Enhanced implementation based on previous work
-Date: 2025-11-26
+===========================================================
+Mathematical Background
+-----------------------
+The Rational Quadratic kernel is a scale mixture of RBF kernels with different length scales.
+It can be interpreted as an infinite sum of RBF kernels with different characteristic length
+scales, making it particularly useful for modeling functions with multiple length scales.
 
-This script implements Gaussian Process Regression using Rational Quadratic Kernel
-for Machine Learning HW5.
+RQ Kernel Formula:
+    k(x, x') = σ² * (1 + ||x - x'||² / (2αl²))^(-α)
 
-Tasks:
-1. Task 1: Apply GPR with initial parameters and visualize
-2. Task 2: Optimize kernel parameters by minimizing negative marginal log-likelihood
+where:
+    - σ (sigma): Signal variance, controls the overall amplitude
+    - α (alpha): Scale-mixture weight, controls smoothness (α→∞ becomes RBF)
+    - l (length scale): Characteristic length scale of variation
+
+Implementation Tasks
+--------------------
+Task 1: Apply GPR with initial parameters (σ=1.0, α=1.0, l=1.0)
+    - Compute posterior predictive distribution
+    - Visualize mean prediction and 95% confidence intervals
+    - Calculate negative marginal log-likelihood
+
+Task 2: Optimize kernel hyperparameters
+    - Minimize negative marginal log-likelihood using L-BFGS-B
+    - Compare optimized vs. initial predictions
+    - Analyze parameter influence on model behavior
+
+Notes
+-----
+This implementation uses:
+- Exact GP inference (matrix inversion) suitable for small-to-medium datasets (n < 10000)
+- Numerical stability: Jitter term (β^(-1)) added to diagonal for positive definiteness
+- Optimization: L-BFGS-B with bounds to ensure parameter positivity
 """
 
-from scipy.spatial.distance import cdist
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy.optimize import minimize
+from scipy.spatial.distance import cdist  # Efficient pairwise distance computation
+import numpy as np  # Numerical operations
+import matplotlib.pyplot as plt  # Plotting
+from scipy.optimize import minimize  # Hyperparameter optimization
 
 
 def rational_quadratic_kernel(x1, x2, sigma, alpha, length_scale):
     """
-    Computes the Rational Quadratic kernel between two sets of points.
+    Compute the Rational Quadratic covariance kernel between two sets of input points.
 
-    The Rational Quadratic kernel is defined as:
-    k(x, x') = σ² * (1 + ||x - x'||² / (2 * α * l²))^(-α)
+    The Rational Quadratic (RQ) kernel is equivalent to a scale mixture (infinite sum) of
+    RBF kernels with different characteristic length scales. It interpolates between the
+    RBF kernel (α→∞) and linear kernel behavior for different length scales.
 
-    where:
-    - σ (sigma): amplitude parameter
-    - α (alpha): shape parameter controlling smoothness
-    - l (length_scale): characteristic length scale
+    Mathematical Formulation
+    ------------------------
+    k(x, x') = σ² * (1 + ||x - x'||² / (2αl²))^(-α)
 
-    Parameters:
-    -----------
-    x1, x2 : numpy.ndarray
-        Input data, can be of different lengths
-    sigma : float
-        The amplitude parameter controlling the overall scale of the kernel
-    alpha : float
-        The shape parameter controlling the kernel's flexibility
-    length_scale : float
-        Length scale controls how far apart inputs must be to be considered correlated
+    where ||x - x'|| is the Euclidean distance between points x and x'.
 
-    Returns:
-    --------
-    kernel : numpy.ndarray
-        Kernel matrix K(x1, x2)
+    Parameters
+    ----------
+    x1 : numpy.ndarray, shape (n_samples_1, n_features)
+        First set of input points. Each row represents a data point.
+    x2 : numpy.ndarray, shape (n_samples_2, n_features)
+        Second set of input points. Can have different number of samples than x1.
+    sigma : float, positive
+        Signal standard deviation (amplitude parameter). Controls the average distance
+        of the function output from its mean. Typical range: [0.1, 10.0]
+    alpha : float, positive
+        Shape parameter controlling the relative weighting of different length scales.
+        - Small α (< 1): more weight on larger length scales (smoother variations)
+        - Large α (> 100): approaches RBF kernel (single length scale)
+        Typical range: [0.1, 100.0]
+    length_scale : float, positive
+        Characteristic length scale parameter. Determines the distance in input space
+        over which function values are significantly correlated.
+        Typical range: [0.1, 10.0]
+
+    Returns
+    -------
+    kernel_matrix : numpy.ndarray, shape (n_samples_1, n_samples_2)
+        Computed kernel (covariance) matrix K(x1, x2).
+        Entry K[i,j] represents the covariance between x1[i] and x2[j].
+
+    Notes
+    -----
+    - Computational complexity: O(n1 * n2 * d) where d is the feature dimension
+    - The kernel is symmetric if x1 == x2: K(x, x') = K(x', x)
+    - When α→∞, RQ kernel converges to RBF kernel: k(x,x') = σ² * exp(-||x-x'||²/(2l²))
+    - The kernel is positive semi-definite, ensuring valid covariance matrices
     """
-    # Compute pairwise Euclidean distances between x1 and x2
-    distance = cdist(x1, x2, 'euclidean')
+    # Step 1: Compute pairwise Euclidean distances using scipy's efficient implementation
+    # distance[i,j] = ||x1[i] - x2[j]||_2
+    distance = cdist(x1, x2, metric='euclidean')
 
-    # Apply Rational Quadratic kernel formula
-    kernel = (sigma**2) * (1 + distance**2 / (2 * alpha * length_scale**2))**(-alpha)
+    # Step 2: Apply Rational Quadratic kernel formula
+    # Numerically stable computation: avoid overflow for small length_scale
+    scaled_distance_sq = distance**2 / (2 * alpha * length_scale**2)
 
-    return kernel
+    # Kernel computation: k(x,x') = σ² * (1 + scaled_distance²)^(-α)
+    kernel_matrix = (sigma**2) * np.power(1 + scaled_distance_sq, -alpha)
+
+    return kernel_matrix
 
 
 def gaussian_process_regression(X_train, Y_train, X_pred, sigma=1.0, alpha=1.0, length_scale=1.0, beta=5):
     """
-    Perform Gaussian Process Regression to predict the distribution of f at X_pred.
+    Perform Gaussian Process Regression to compute posterior predictive distribution.
 
-    Given training data (X_train, Y_train) where Y_train = f(X_train) + ε,
-    and ε ~ N(0, β^(-1)), this function computes the posterior predictive distribution
-    p(f(X_pred) | X_train, Y_train).
+    This function implements exact GP inference using the closed-form Bayesian update
+    equations. Given noisy observations Y_train = f(X_train) + ε where ε ~ N(0, β^(-1)I),
+    we compute the posterior distribution over function values at test points X_pred.
 
-    Formulas (from Kernel_GP_SVM.pdf page 48):
-    - C(xn, xm) = k(xn, xm) + β^(-1) * δnm
-    - μ(x*) = k(x, x*)^T * C^(-1) * y
-    - σ²(x*) = k(x*, x*) + β^(-1) - k(x, x*)^T * C^(-1) * k(x, x*)
+    Mathematical Framework
+    ----------------------
+    Prior: f ~ GP(0, k(·,·))
+    Likelihood: y|f ~ N(f, β^(-1)I)
+    Posterior: f*|X,y,X* ~ N(μ*, Σ*)
 
-    Parameters:
-    -----------
-    X_train : numpy.ndarray, shape (n, 1)
-        Training input data
-    Y_train : numpy.ndarray, shape (n, 1)
-        Training output data (noisy observations)
-    X_pred : numpy.ndarray, shape (m, 1)
-        Prediction points
-    sigma : float
-        Amplitude parameter for kernel
-    alpha : float
-        Shape parameter for kernel
-    length_scale : float
-        Length scale parameter for kernel
-    beta : float
-        Noise precision (inverse of observation noise variance)
+    where:
+        C = K(X,X) + β^(-1)I                    [n × n] observation covariance
+        μ* = K(X*,X)ᵀ C^(-1) y                  [m × 1] posterior mean
+        Σ* = K(X*,X*) + β^(-1)I - K(X*,X)ᵀ C^(-1) K(X*,X)  [m × m] posterior covariance
 
-    Returns:
-    --------
-    mu_s : numpy.ndarray, shape (m, 1)
-        Mean of the posterior predictive distribution at X_pred
-    cov_s : numpy.ndarray, shape (m, m)
-        Covariance of the posterior predictive distribution at X_pred
+    Parameters
+    ----------
+    X_train : numpy.ndarray, shape (n_samples, n_features)
+        Training input locations. Each row is an observation.
+    Y_train : numpy.ndarray, shape (n_samples, 1)
+        Training output values (noisy observations of the latent function).
+    X_pred : numpy.ndarray, shape (n_pred, n_features)
+        Test input locations where predictions are desired.
+    sigma : float, default=1.0
+        Kernel amplitude parameter (signal standard deviation).
+    alpha : float, default=1.0
+        Kernel shape parameter (scale-mixture weight).
+    length_scale : float, default=1.0
+        Kernel characteristic length scale.
+    beta : float, default=5
+        Noise precision parameter (inverse of observation noise variance σ_n²).
+        Equivalently, observation noise ~ N(0, β^(-1)).
+        Typical range: [1, 100]. Higher β = lower noise assumption.
+
+    Returns
+    -------
+    mu_pred : numpy.ndarray, shape (n_pred, 1)
+        Posterior predictive mean at test locations X_pred.
+        This is the expected value: E[f(X_pred) | X_train, Y_train]
+    cov_pred : numpy.ndarray, shape (n_pred, n_pred)
+        Posterior predictive covariance at test locations X_pred.
+        Diagonal elements give pointwise predictive variance: Var[f(x*) | data]
+        Off-diagonal elements give predictive covariances between test points.
+
+    Notes
+    -----
+    - Computational complexity: O(n³) due to matrix inversion, where n = len(X_train)
+    - For large datasets (n > 5000), consider sparse GP approximations (e.g., inducing points)
+    - The jitter term β^(-1)I ensures numerical stability and positive definiteness
+    - The posterior covariance is independent of observed Y values (only depends on X locations)
+    - 95% credible intervals: μ ± 1.96 * sqrt(diag(Σ))
+
+    Raises
+    ------
+    numpy.linalg.LinAlgError
+        If the covariance matrix C is singular (extremely rare with jitter term).
     """
     # Compute covariance matrices
     # C = K(X, X) + (β^-1)I - Covariance of training observations
@@ -118,49 +189,99 @@ def gaussian_process_regression(X_train, Y_train, X_pred, sigma=1.0, alpha=1.0, 
 
 def negative_log_likelihood(params, X_train, Y_train, beta=5):
     """
-    Compute the negative log marginal likelihood for the GP with Rational Quadratic kernel.
+    Compute negative log marginal likelihood (NLML) for GP hyperparameter optimization.
 
-    The marginal log-likelihood (from Kernel_GP_SVM.pdf page 52):
-    ln p(y|θ) = -1/2 * ln|Cθ| - 1/2 * y^T * Cθ^(-1) * y - N/2 * ln(2π)
+    The marginal likelihood p(y|X,θ) integrates out the latent function values f,
+    providing a principled Bayesian approach to hyperparameter selection. Maximizing
+    the marginal likelihood (or equivalently minimizing its negative) automatically
+    balances model fit and complexity, preventing overfitting.
 
-    We negate this to convert maximization problem to minimization problem
-    for use with scipy.optimize.minimize.
+    Mathematical Formulation
+    ------------------------
+    Log marginal likelihood:
+        log p(y|X,θ) = -½ log|C_θ| - ½ yᵀC_θ⁻¹y - (n/2)log(2π)
 
-    Parameters:
-    -----------
-    params : list or numpy.ndarray
-        List of kernel parameters [sigma, alpha, length_scale]
-    X_train : numpy.ndarray
-        Training input data
-    Y_train : numpy.ndarray
-        Training output data
-    beta : float
-        Noise precision (inverse of observation noise variance)
+    where:
+        - C_θ = K(X,X) + β⁻¹I is the marginal covariance of observations
+        - θ = [σ, α, l] are the kernel hyperparameters
+        - n is the number of training points
 
-    Returns:
-    --------
-    NLL : float
-        Negative log marginal likelihood (scalar value)
+    Decomposition:
+        log p(y|X,θ) = log p(y|f) + log p(f|X,θ) - log p(f|X,y,θ)
+                     = data fit term + complexity penalty - posterior term
+
+    The three terms in the formula have interpretations:
+        1. log|C_θ|: Model complexity (penalizes very flexible models)
+        2. yᵀC_θ⁻¹y: Data fit (how well model explains observations)
+        3. n·log(2π): Normalization constant (independent of θ)
+
+    Parameters
+    ----------
+    params : array-like, shape (3,)
+        Kernel hyperparameters [sigma, alpha, length_scale] to optimize.
+        Must be positive values.
+    X_train : numpy.ndarray, shape (n_samples, n_features)
+        Training input locations.
+    Y_train : numpy.ndarray, shape (n_samples, 1)
+        Training output values (noisy observations).
+    beta : float, default=5
+        Fixed noise precision parameter (not optimized).
+
+    Returns
+    -------
+    nlml : float
+        Negative log marginal likelihood value. Lower values indicate better
+        hyperparameters that balance fit and complexity.
+
+    Notes
+    -----
+    - This function is typically used as the objective for scipy.optimize.minimize
+    - Gradient information is not provided (numerical gradients used by L-BFGS-B)
+    - For numerical stability, consider log-det via Cholesky: log|C| = 2·sum(log(diag(L)))
+    - The function assumes well-conditioned covariance matrices (ensured by jitter β⁻¹I)
+    - Optimization landscape is typically non-convex with multiple local minima
+    - Typical optimization: minimize(negative_log_likelihood, x0, bounds=[(1e-2, None)]*3)
+
+    Computational Complexity
+    ------------------------
+    - O(n³) for matrix inversion (dominant cost)
+    - O(n²) for kernel matrix computation
+    - O(n²) for quadratic form yᵀC⁻¹y
     """
+    # Unpack hyperparameters
     sigma, alpha, length_scale = params
 
-    # Compute kernel matrix
+    # Step 1: Compute kernel matrix K(X,X) using current hyperparameters
+    # K[i,j] = k(x_i, x_j; θ)
     K = rational_quadratic_kernel(X_train, X_train, sigma, alpha, length_scale)
 
-    # Add noise term: C = K + β^(-1) * I
-    C = K + np.eye(len(X_train)) / beta
+    # Step 2: Add observation noise to form marginal covariance
+    # C = K(X,X) + σ_noise²·I = K + β⁻¹·I
+    # The jitter term β⁻¹I ensures positive definiteness and numerical stability
+    n_samples = len(X_train)
+    C = K + np.eye(n_samples) / beta
 
-    # Compute inverse of C
+    # Step 3: Compute matrix inverse (expensive O(n³) operation)
+    # In production code, prefer Cholesky decomposition: C = LLᵀ for stability
     C_inv = np.linalg.inv(C)
 
-    # Compute negative log marginal likelihood
-    # NLL = 0.5 * (ln|C| + y^T * C^(-1) * y + N * ln(2π))
-    NLL = 0.5 * (np.log(np.linalg.det(C)) +
-                 (Y_train.T).dot(C_inv).dot(Y_train) +
-                 len(C) * np.log(2 * np.pi))
+    # Step 4: Compute the three terms of negative log marginal likelihood
+    # Term 1: Complexity penalty - log determinant of C
+    # Measures the "volume" of the hypothesis space
+    log_det_C = np.log(np.linalg.det(C))
 
-    # Extract scalar value from (1,1) matrix
-    return NLL[0, 0]
+    # Term 2: Data fit term - quadratic form yᵀC⁻¹y
+    # Measures how well the model explains the observations
+    data_fit = (Y_train.T).dot(C_inv).dot(Y_train)
+
+    # Term 3: Normalization constant (independent of hyperparameters)
+    log_2pi_term = n_samples * np.log(2 * np.pi)
+
+    # Compute NLML: -log p(y|X,θ) = ½(log|C| + yᵀC⁻¹y + n·log(2π))
+    nlml = 0.5 * (log_det_C + data_fit + log_2pi_term)
+
+    # Extract scalar from (1,1) matrix result
+    return nlml[0, 0]
 
 
 def plot_gp_result(X, Y, X_pred, mu_s, cov_s, title, save_path=None):

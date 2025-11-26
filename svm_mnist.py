@@ -1,23 +1,80 @@
 """
-SVM on MNIST Dataset (Digits 0-4)
-Author: Enhanced implementation based on previous work
-Date: 2025-11-26
+Support Vector Machine Classification on MNIST Handwritten Digits
+===================================================================
 
-This script implements SVM classification on MNIST hand-written digits (0-4)
-for Machine Learning HW5.
+This module implements Support Vector Machine (SVM) multi-class classification on a subset of the MNIST handwritten digit dataset (digits 0-4). 
+This implementation uses LIBSVM library and explores different kernel functions for non-linear classification.
 
-Tasks:
-1. Task 1: Train and evaluate SVM with different kernels (linear, polynomial, RBF)
-2. Task 2: Grid search for best hyperparameters with cross-validation
-3. Task 3: Implement custom kernel (linear + RBF) and compare performance
+Mathematical Background
+-----------------------
+Support Vector Machines find the optimal separating hyperplane by solving:
+
+    min_{w,b} ½||w||² + C∑ξᵢ
+    subject to: yᵢ(wᵀφ(xᵢ) + b) ≥ 1 - ξᵢ, ξᵢ ≥ 0
+
+where:
+    - w: weight vector in feature space
+    - b: bias term
+    - C: regularization parameter (controls overfitting vs. margin)
+    - ξᵢ: slack variables (allow misclassification)
+    - φ(x): feature map induced by kernel function k(x,x') = ⟨φ(x),φ(x')⟩
+
+Kernel Functions Implemented
+-----------------------------
+1. **Linear Kernel**: k(x,x') = xᵀx'
+   - Suitable for linearly separable data
+   - Fastest training, no hyperparameters except C
+   - Interpretable weights in original space
+
+2. **Polynomial Kernel**: k(x,x') = (γxᵀx' + r)^d
+   - Captures polynomial interactions up to degree d
+   - Parameters: C (regularization), γ (scaling), d (degree), r (offset)
+   - Can overfit if degree too high
+
+3. **RBF (Gaussian) Kernel**: k(x,x') = exp(-γ||x-x'||²)
+   - Universal approximator, handles non-linear boundaries
+   - Parameters: C (regularization), γ (inverse bandwidth)
+   - Most commonly used for complex classification
+
+4. **Custom Kernel (Linear + RBF)**: k(x,x') = xᵀx' + exp(-γ||x-x'||²)
+   - Combines linear and non-linear components
+   - Can capture both global linear trends and local non-linearities
+   - Requires precomputed kernel matrix format
+
+Implementation Details
+----------------------
+Task 1: Baseline Evaluation
+    - Train SVM with default parameters (C=1)
+    - Test Linear, Polynomial (degree=3), and RBF kernels
+    - Evaluate on hold-out test set
+
+Task 2: Hyperparameter Optimization
+    - Grid search over C, γ, and degree parameters
+    - 5-fold cross-validation for model selection
+    - Train final model with best hyperparameters
+    - Expected: RBF with tuned parameters performs best
+
+Task 3: Custom Kernel Design
+    - Implement composite kernel (Linear + RBF)
+    - Format as precomputed kernel matrix for LIBSVM (-t 4)
+    - Grid search for optimal C and γ
+    - Compare performance with standard kernels
+
+Dataset Information
+-------------------
+- Training samples: 5000 images (1000 per class for digits 0-4)
+- Test samples: 500 images (100 per class)
+- Features: 784 dimensions (28×28 pixel intensities, flattened)
+- Labels: {0, 1, 2, 3, 4}
+- Preprocessing: Pixel values scaled to [0, 1]
 """
 
-import gc
-import numpy as np
-from libsvm.svmutil import *
-from scipy.spatial.distance import cdist
-import pandas as pd
-from datetime import datetime
+import gc  # Garbage collection for memory management
+import numpy as np  # Numerical operations
+from libsvm.svmutil import *  # LIBSVM: svm_train, svm_predict, svm_model
+from scipy.spatial.distance import cdist  # Efficient pairwise distances
+import pandas as pd  # CSV data loading
+from datetime import datetime  # Timestamp logging
 
 
 def reset_environment():
@@ -117,33 +174,111 @@ def grid_search(X_train, Y_train, kernel_type, param_grid):
 
 def custom_kernel(x1, x2, gamma=0.01):
     """
-    Custom kernel combining linear and RBF kernels.
+    Compute custom composite kernel combining linear and RBF (Gaussian) kernels.
 
-    Formula:
-    - Linear kernel: k_linear(x, x') = x^T * x'
-    - RBF kernel: k_rbf(x, x') = exp(-gamma * ||x - x'||²)
-    - Custom kernel: k_custom(x, x') = k_linear(x, x') + k_rbf(x, x')
+    This hybrid kernel captures both global linear structure and local non-linear patterns.
+    The additive combination allows the SVM to learn from both kernel spaces simultaneously.
 
-    Parameters:
-    -----------
-    x1, x2 : numpy.ndarray
-        Input data points
-    gamma : float
-        Gamma parameter for RBF kernel
+    Mathematical Formulation
+    ------------------------
+    k_custom(x, x') = k_linear(x, x') + k_rbf(x, x')
+                    = xᵀx' + exp(-γ||x - x'||²)
 
-    Returns:
+    where:
+    - First term (linear): captures global linear trends and correlations
+    - Second term (RBF): captures local non-linear similarities
+    - γ (gamma): controls the bandwidth of the RBF component
+
+    Kernel Properties
+    -----------------
+    - Symmetric: k(x,x') = k(x',x)
+    - Positive semi-definite (sum of valid kernels)
+    - Universal approximator (due to RBF component)
+    - Interpretable (linear component provides global structure)
+
+    Design Rationale
+    ----------------
+    For MNIST digit classification:
+    - Linear component: helps with linearly separable digit pairs (e.g., 0 vs 1)
+    - RBF component: handles complex boundaries (e.g., 3 vs 8, 4 vs 9)
+    - Equal weighting (1:1): simplest baseline for kernel combination
+    - Could be improved with learnable weights: w₁·k_linear + w₂·k_rbf
+
+    Parameters
+    ----------
+    x1 : numpy.ndarray, shape (n_samples_1, n_features)
+        First set of data points (e.g., training samples or test samples).
+    x2 : numpy.ndarray, shape (n_samples_2, n_features)
+        Second set of data points (e.g., training samples).
+        For training: x1 = x2 = X_train (square matrix)
+        For testing: x1 = X_test, x2 = X_train (rectangular matrix)
+    gamma : float, default=0.01
+        RBF kernel bandwidth parameter. Controls the reach of influence:
+        - Small γ (e.g., 0.001): smooth, wide influence (may underfit)
+        - Medium γ (e.g., 0.01): balanced (often optimal)
+        - Large γ (e.g., 0.1): tight influence (may overfit)
+        Typical range for normalized MNIST: [0.001, 0.1]
+
+    Returns
+    -------
+    kernel_matrix : numpy.ndarray, shape (n_samples_1, n_samples_2)
+        Precomputed kernel matrix K[i,j] = k_custom(x1[i], x2[j]).
+        This matrix is used with LIBSVM's precomputed kernel option (-t 4).
+
+    Examples
     --------
-    kernel_matrix : numpy.ndarray
-        Combined kernel matrix
+    >>> X_train = np.random.rand(100, 784)  # 100 samples, 784 features
+    >>> X_test = np.random.rand(20, 784)    # 20 test samples
+    >>> K_train = custom_kernel(X_train, X_train, gamma=0.01)  # (100, 100)
+    >>> K_test = custom_kernel(X_test, X_train, gamma=0.01)     # (20, 100)
+    >>> print(f"Train kernel: {K_train.shape}, Test kernel: {K_test.shape}")
+
+    Notes
+    -----
+    - Computational complexity: O(n1 * n2 * d) where d is feature dimension
+    - For MNIST (d=784), this is more expensive than built-in LIBSVM kernels
+    - Memory usage: O(n1 * n2) for storing full kernel matrix
+    - Kernel values are not normalized (consider scaling if needed)
+    - Alternative combinations: multiplicative (k₁ · k₂), weighted sum (w₁k₁ + w₂k₂)
+
+    LIBSVM Usage
+    ------------
+    To use with LIBSVM precomputed kernel format:
+    1. Compute kernel matrix: K = custom_kernel(X, X_train, gamma)
+    2. Add sample indices: K_formatted = np.hstack([np.arange(1, n+1).reshape(-1,1), K])
+    3. Train/predict: svm_train(Y, K_formatted.tolist(), '-t 4 -c 1')
+
+    Performance Considerations
+    --------------------------
+    - Linear component scales O(d) per evaluation (efficient for high dimensions)
+    - RBF component scales O(d) per evaluation but requires distance computation
+    - Precomputation trades memory for speed during SVM training
+    - For large datasets, consider approximate methods (e.g., Nyström approximation)
+
+    See Also
+    --------
+    np.dot : Linear kernel computation (matrix multiplication)
+    scipy.spatial.distance.cdist : Efficient pairwise distance computation
     """
-    # Linear kernel: dot product
+    # Step 1: Compute linear kernel component
+    # k_linear(x,x') = xᵀx' using efficient matrix multiplication
+    # Result shape: (n_samples_1, n_samples_2)
     linear_kernel = np.dot(x1, x2.T)
 
-    # RBF kernel: exp(-gamma * squared_euclidean_distance)
-    rbf_kernel = np.exp(-gamma * cdist(x1, x2, 'sqeuclidean'))
+    # Step 2: Compute RBF (Gaussian) kernel component
+    # k_rbf(x,x') = exp(-γ * ||x - x'||²)
+    # Using cdist with 'sqeuclidean' metric for efficiency (avoids sqrt)
+    # squared_distances[i,j] = ||x1[i] - x2[j]||²
+    squared_distances = cdist(x1, x2, metric='sqeuclidean')
 
-    # Combine kernels
-    return linear_kernel + rbf_kernel
+    # Apply exponential with gamma parameter
+    rbf_kernel = np.exp(-gamma * squared_distances)
+
+    # Step 3: Combine kernels via addition (equal weighting)
+    # This is a valid positive semi-definite kernel (closure under addition)
+    kernel_matrix = linear_kernel + rbf_kernel
+
+    return kernel_matrix
 
 
 def format_kernel_params(kernel_name, params):
