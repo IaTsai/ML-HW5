@@ -1,0 +1,5 @@
+numpy==1.19.0
+scipy==1.5.1
+pandas==1.1.5
+matplotlib>=3.3.0
+libsvm-official>=3.23.0
