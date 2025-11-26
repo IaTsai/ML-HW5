@@ -18,6 +18,7 @@ My_new/
 ├── setup_linux.sh           # Linux environment setup script
 ├── requirements.txt         # Python dependencies
 ├── README.md                # This file
+├── Report.pdf               # Final Deliver file
 └── ML_HW05/
     └── data/
         ├── input.data       # GP training data
